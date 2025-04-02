@@ -317,9 +317,6 @@ void handle_shell_command(char *cmd) {
     	snprintf(buffer, sizeof(buffer), "BLOCK|%s", block_ip);
     	send(client_socket, buffer, strlen(buffer), 0);
 
-    	cse4589_print_and_log("[%s:SUCCESS]\n", "BLOCK");
-    	cse4589_print_and_log("[%s:END]\n", "BLOCK");
-
 	} else if (strncmp(cmd, "UNBLOCK", 7) == 0 && !is_server) {
     	char unblock_ip[IPV4_ADDR_LEN];
     	if (sscanf(cmd + 8, "%15s", unblock_ip) != 1) {
@@ -333,13 +330,26 @@ void handle_shell_command(char *cmd) {
     	snprintf(buffer, sizeof(buffer), "UNBLOCK|%s", unblock_ip);
     	send(client_socket, buffer, strlen(buffer), 0);
 
-    	cse4589_print_and_log("[%s:SUCCESS]\n", "UNBLOCK");
-    	cse4589_print_and_log("[%s:END]\n", "UNBLOCK");
 	} else if (strcmp(cmd, "REFRESH") == 0 && !is_server) {
 		send(client_socket, "REFRESH\n", strlen("REFRESH\n"), 0);
-	} else {
-		cse4589_print_and_log("[%s:ERROR]\n", cmd);
-		cse4589_print_and_log("[%s:END]\n", cmd);
+
+	} else if (strcmp(cmd, "LOGOUT") == 0 && !is_server) {
+    	if (client_socket == -1) {
+        	cse4589_print_and_log("[%s:ERROR]\n", "LOGOUT");
+        	printf("Not logged in.\n");
+        	cse4589_print_and_log("[%s:END]\n", "LOGOUT");
+        	return;
+    	}
+
+    	send(client_socket, "LOGOUT\n", strlen("LOGOUT\n"), 0);
+    	close(client_socket);
+   		client_socket = -1;
+
+    	cse4589_print_and_log("[%s:SUCCESS]\n", "LOGOUT");
+    	cse4589_print_and_log("[%s:END]\n", "LOGOUT");
+		} else {
+			cse4589_print_and_log("[%s:ERROR]\n", cmd);
+			cse4589_print_and_log("[%s:END]\n", cmd);
 	}
 }
 
@@ -552,9 +562,14 @@ void server_loop() {
 						if (client_list[j].logged_in && strcmp(client_list[j].ip, block_ip) == 0) blocked_index = j;
 					}
 
-					if (blocker_index != -1 && blocked_index != -1) {
-						block_matrix[blocker_index][blocked_index] = 1;
-					}
+					if (blocker_index == -1 || blocked_index == -1) {
+						send(i, "BLOCK_RESULT|ERROR|Invalid or unknown IP\n", strlen("BLOCK_RESULT|ERROR|Invalid or unknown IP\n"), 0);
+					} else if (block_matrix[blocker_index][blocked_index] == 1) {
+        				send(i, "BLOCK_RESULT|ERROR|Already blocked\n", strlen("BLOCK_RESULT|ERROR|Already blocked\n"), 0);
+    				} else {
+        				block_matrix[blocker_index][blocked_index] = 1;
+        				send(i, "BLOCK_RESULT|SUCCESS\n", strlen("BLOCK_RESULT|SUCCESS\n"), 0);
+    				}
 				}
 
 				// 处理 UNBLOCK 报文
@@ -569,9 +584,14 @@ void server_loop() {
                         if (client_list[j].logged_in && strcmp(client_list[j].ip, unblock_ip) == 0) unblocked_index = j;
                     }
 
-                    if (unblocker_index != -1 && unblocked_index != -1) {
-                        block_matrix[unblocker_index][unblocked_index] = 0;
-                    }
+                    if (unblocker_index == -1 || unblocked_index == -1) {
+                        send(i, "UNBLOCK_RESULT|ERROR|Invalid or unknown IP\n", strlen("UNBLOCK_RESULT|ERROR|Invalid or unknown IP\n"), 0);
+                    } else if (block_matrix[unblocker_index][unblocked_index] == 0) {
+        				send(i, "UNBLOCK_RESULT|ERROR|Not currently blocked\n", strlen("UNBLOCK_RESULT|ERROR|Not currently blocked\n"), 0);
+    				} else {
+        				block_matrix[unblocker_index][unblocked_index] = 0;
+        				send(i, "UNBLOCK_RESULT|SUCCESS\n", strlen("UNBLOCK_RESULT|SUCCESS\n"), 0);
+    				}
                 }
 
 				// 处理 REFRESH 报文
@@ -608,6 +628,19 @@ void server_loop() {
 
     				send(i, result, strlen(result), 0);
                 }
+
+				// 处理 LOGOUT 报文
+                else if (strncmp(recv_buf, "LOGOUT", 6) == 0) {
+                    for (int j = 0; j < MAX_CLIENTS; ++j) {
+                        if (client_list[j].socket_fd == i) {
+                            client_list[j].logged_in = 0;
+                            client_list[j].socket_fd = -1;
+                            break;
+                        }
+                    }
+                    close(i);
+					FD_CLR(i, &master_fds);
+                }
 			}
     	}
 	}
@@ -631,7 +664,7 @@ void client_loop() {
         read_fds = master;
         if (select(fd_max + 1, &read_fds, NULL, NULL, NULL) == -1){
             perror("select error");
-            exit(EXIT_FAILURE);
+            continue;
         }
 
         if (FD_ISSET(STDIN_FILENO, &read_fds)) {
@@ -641,6 +674,9 @@ void client_loop() {
             handle_shell_command(input);
 
 			// 若登录成功后建立连接，更新监听集
+			FD_ZERO(&master);
+			FD_SET(STDIN_FILENO, &master);
+			fd_max = STDIN_FILENO;
 			if (client_socket != -1) {
                 FD_SET(client_socket, &master);
                 if (client_socket > fd_max)
@@ -656,7 +692,8 @@ void client_loop() {
                 // 服务器关闭连接或出错
                 close(client_socket);
                 FD_CLR(client_socket, &master);
-                client_socket = -1;
+				client_socket = -1;
+				fd_max = STDIN_FILENO;
                 continue;
             }
 
@@ -667,7 +704,21 @@ void client_loop() {
                 cse4589_print_and_log("[%s:SUCCESS]\n", "RECEIVED");
                 cse4589_print_and_log("msg from:%s\n[msg]:%s\n", sender_ip, msg);
                 cse4589_print_and_log("[%s:END]\n", "RECEIVED");
-            } else {
+            } else if (strncmp(buf, "BLOCK_RESULT|SUCCESS", 21) == 0) {
+    			cse4589_print_and_log("[%s:SUCCESS]\n", "BLOCK");
+    			cse4589_print_and_log("[%s:END]\n", "BLOCK");
+			} else if (strncmp(buf, "BLOCK_RESULT|ERROR|", 20) == 0) {
+    			cse4589_print_and_log("[%s:ERROR]\n", "BLOCK");
+    			printf("%s\n", buf + 20);
+    			cse4589_print_and_log("[%s:END]\n", "BLOCK");
+			} else if (strncmp(buf, "UNBLOCK_RESULT|SUCCESS", 23) == 0) {
+    			cse4589_print_and_log("[%s:SUCCESS]\n", "UNBLOCK");
+    			cse4589_print_and_log("[%s:END]\n", "UNBLOCK");
+			} else if (strncmp(buf, "UNBLOCK_RESULT|ERROR|", 22) == 0) {
+    			cse4589_print_and_log("[%s:ERROR]\n", "UNBLOCK");
+    			printf("%s\n", buf + 22);
+    			cse4589_print_and_log("[%s:END]\n", "UNBLOCK");
+			} else {
                 // 其他情况当作 LIST 响应处理
                 cse4589_print_and_log("[%s:SUCCESS]\n", "LIST");
                 printf("%s", buf);
