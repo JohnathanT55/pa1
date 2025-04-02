@@ -303,57 +303,28 @@ void handle_shell_command(char *cmd) {
     	cse4589_print_and_log("[%s:SUCCESS]\n", "BROADCAST");
     	cse4589_print_and_log("[%s:END]\n", "BROADCAST");
 
-	} else if (strncmp(cmd, "BLOCK", 6) == 0 && !is_server) {
+	} else if (strncmp(cmd, "BLOCK", 5) == 0 && !is_server) {
     	char block_ip[IPV4_ADDR_LEN];
     	if (sscanf(cmd + 6, "%15s", block_ip) != 1) {
         	cse4589_print_and_log("[%s:ERROR]\n", "BLOCK");
-        	cse4589_print_and_log("[%s:END]\n", "BLOCK");
-        	return;
-    	}
-		// 验证是否存在该IP
-		int found = 0;
-    	for (int i = 0; i < MAX_CLIENTS; ++i) {
-        	if (client_list[i].logged_in && strcmp(client_list[i].ip, block_ip) == 0) {
-            	found = 1;
-            	break;
-        	}
-    	}
-
-    	if (!found) {
-        	cse4589_print_and_log("[%s:ERROR]\n", "BLOCK");
-        	printf("Client not found or IP invalid.\n");
+			printf("Invalid command format. Usage: BLOCK <ip>\n");
         	cse4589_print_and_log("[%s:END]\n", "BLOCK");
         	return;
     	}
 
-        // 发送 BLOCK 报文
-    	char buffer[BUFFER_SIZE];
+        // 发送 BLOCK 报文, 服务器判断是否存在该IP
+		char buffer[BUFFER_SIZE];
     	snprintf(buffer, sizeof(buffer), "BLOCK|%s", block_ip);
     	send(client_socket, buffer, strlen(buffer), 0);
 
     	cse4589_print_and_log("[%s:SUCCESS]\n", "BLOCK");
     	cse4589_print_and_log("[%s:END]\n", "BLOCK");
 
-	} else if (strncmp(cmd, "UNBLOCK", 8) == 0 && !is_server) {
+	} else if (strncmp(cmd, "UNBLOCK", 7) == 0 && !is_server) {
     	char unblock_ip[IPV4_ADDR_LEN];
     	if (sscanf(cmd + 8, "%15s", unblock_ip) != 1) {
         	cse4589_print_and_log("[%s:ERROR]\n", "UNBLOCK");
-        	cse4589_print_and_log("[%s:END]\n", "UNBLOCK");
-        	return;
-    	}
-
-		// 验证本地列表中是否存在该 IP
-   		int found = 0;
-    	for (int i = 0; i < MAX_CLIENTS; ++i) {
-        	if (client_list[i].logged_in && strcmp(client_list[i].ip, unblock_ip) == 0) {
-            	found = 1;
-            	break;
-        	}
-    	}
-
-    	if (!found) {
-        	cse4589_print_and_log("[%s:ERROR]\n", "UNBLOCK");
-        	printf("Client not found or IP invalid.\n");
+			printf("Invalid command format. Usage: UNBLOCK <ip>\n");
         	cse4589_print_and_log("[%s:END]\n", "UNBLOCK");
         	return;
     	}
@@ -364,6 +335,8 @@ void handle_shell_command(char *cmd) {
 
     	cse4589_print_and_log("[%s:SUCCESS]\n", "UNBLOCK");
     	cse4589_print_and_log("[%s:END]\n", "UNBLOCK");
+	} else if (strcmp(cmd, "REFRESH") == 0 && !is_server) {
+		send(client_socket, "REFRESH\n", strlen("REFRESH\n"), 0);
 	} else {
 		cse4589_print_and_log("[%s:ERROR]\n", cmd);
 		cse4589_print_and_log("[%s:END]\n", cmd);
@@ -599,6 +572,41 @@ void server_loop() {
                     if (unblocker_index != -1 && unblocked_index != -1) {
                         block_matrix[unblocker_index][unblocked_index] = 0;
                     }
+                }
+
+				// 处理 REFRESH 报文
+				else if (strncmp(recv_buf, "REFRESH", 7) == 0) {
+                    struct client_info sorted[MAX_CLIENTS];
+                    int count = 0;
+
+                    for (int j = 0; j < MAX_CLIENTS; ++j) {
+        				if (client_list[j].logged_in) {
+            				sorted[count++] = client_list[j];
+        				}
+   					}
+
+    				for (int i = 0; i < count - 1; ++i) {
+        				for (int j = i + 1; j < count; ++j) {
+            				if (sorted[i].port > sorted[j].port) {
+                				struct client_info tmp = sorted[i];
+                					sorted[i] = sorted[j];
+                					sorted[j] = tmp;
+            				}
+        				}
+    				}
+
+    				char result[BUFFER_SIZE * 4] = "";
+    				for (int i = 0; i < count; ++i) {
+        				char entry[128];
+        				snprintf(entry, sizeof(entry), "%-5d%-35s%-20s%-8d\n",
+            				i + 1,
+            				sorted[i].hostname,
+            				sorted[i].ip,
+            				sorted[i].port);
+        				strcat(result, entry);
+    				}
+
+    				send(i, result, strlen(result), 0);
                 }
 			}
     	}
