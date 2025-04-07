@@ -22,6 +22,9 @@ struct client_info {
     int port;
     int socket_fd;
     int logged_in;
+    int exited;
+    int msg_sent;
+    int msg_received;
 };
 
 extern struct client_info client_list[MAX_CLIENTS];

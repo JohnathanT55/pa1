@@ -118,10 +118,13 @@ void setup_server() {
  * 初始化客户端 socket
  */
 void setup_client() {
-
-	// 测试用，得删除
-	//cse4589_print_and_log("[%s:SUCCESS]\n", "CLIENT_SETUP");
-	//cse4589_print_and_log("[%s:END]\n", "CLIENT_SETUP");
+	for (int i = 0; i < MAX_CLIENTS; ++i) {
+    	client_list[i].logged_in = 0;
+    	client_list[i].exited = 0;
+    	client_list[i].msg_sent = 0;
+    	client_list[i].msg_received = 0;
+    	client_list[i].socket_fd = -1;
+	}
 }
 
 /**
@@ -160,6 +163,11 @@ void handle_shell_command(char *cmd) {
 		cse4589_print_and_log("I, %s, have read and understood the course academic integrity policy.\n", YOUR_TEAM_NAME);
 		cse4589_print_and_log("[%s:END]\n", "AUTHOR");
 	} else if (strcmp(cmd, "EXIT") == 0) {
+    	if (client_socket != -1) {
+    		send(client_socket, "EXIT\n", strlen("EXIT\n"), 0);
+    		close(client_socket);
+    		client_socket = -1;
+		}
 		cse4589_print_and_log("[%s:SUCCESS]\n", "EXIT");
 		cse4589_print_and_log("[%s:END]\n", "EXIT");
 		exit(0);
@@ -347,10 +355,39 @@ void handle_shell_command(char *cmd) {
 
     	cse4589_print_and_log("[%s:SUCCESS]\n", "LOGOUT");
     	cse4589_print_and_log("[%s:END]\n", "LOGOUT");
-		} else {
-			cse4589_print_and_log("[%s:ERROR]\n", cmd);
-			cse4589_print_and_log("[%s:END]\n", cmd);
-	}
+
+	} else if (strcmp(cmd, "STATISTICS") == 0 && is_server) {
+    	struct client_info sorted[MAX_CLIENTS];
+    	int count = 0;
+    	for (int i = 0; i < MAX_CLIENTS; ++i) {
+        	if (!client_list[i].exited && strlen(client_list[i].hostname) > 0) {
+            	sorted[count++] = client_list[i];
+       		}
+    	}
+
+    	// 按端口排序
+    	for (int i = 0; i < count - 1; ++i) {
+        	for (int j = i + 1; j < count; ++j) {
+            	if (sorted[i].port > sorted[j].port) {
+                	struct client_info tmp = sorted[i];
+                	sorted[i] = sorted[j];
+                	sorted[j] = tmp;
+            	}
+        	}
+    	}
+
+    	cse4589_print_and_log("[%s:SUCCESS]\n", "STATISTICS");
+    	for (int i = 0; i < count; ++i) {
+        	char *status = sorted[i].logged_in ? "logged-in" : "logged-out";
+        	cse4589_print_and_log("%-5d%-35s%-8d%-8d%-8s\n",
+            	i + 1,
+            	sorted[i].hostname,
+            	sorted[i].msg_sent,
+            	sorted[i].msg_received,
+            	status);
+    	}
+    	cse4589_print_and_log("[%s:END]\n", "STATISTICS");
+    }
 }
 
 /**
@@ -470,6 +507,9 @@ void server_loop() {
                     			break;
                     		}
 
+                            client_list[sender_index].msg_sent++;
+							client_list[j].msg_received++;
+
 							char relay[BUFFER_SIZE];
                     		snprintf(relay, sizeof(relay), "RELAYED|%s|%s\n", sender_ip, msg);
                     		send(client_list[j].socket_fd, relay, strlen(relay), 0);
@@ -497,20 +537,30 @@ void server_loop() {
             		sscanf(recv_buf + 10, "%[^\n]", msg);
 
             		char sender_ip[IPV4_ADDR_LEN] = "";
+                    int sender_index = -1;
+
             		for (int k = 0; k < MAX_CLIENTS; ++k) {
                 		if (client_list[k].socket_fd == i) {
                     		strcpy(sender_ip, client_list[k].ip);
+                            sender_index = k;
                     		break;
                 		}
             		}
+
+                    int recipients = 0;
 
             		for (int j = 0; j < MAX_CLIENTS; ++j) {
                 		if (client_list[j].logged_in && client_list[j].socket_fd != i) {
                     		char relay[BUFFER_SIZE];
                     		snprintf(relay, sizeof(relay), "RELAYED|%s|%s\n", sender_ip, msg);
                     		send(client_list[j].socket_fd, relay, strlen(relay), 0);
+                            client_list[j].msg_received++;
+            				recipients++;
                 		}
             		}
+
+                    if (sender_index != -1)
+        				client_list[sender_index].msg_sent += recipients;
         		}
 
 				// 处理 LIST 请求
@@ -640,6 +690,20 @@ void server_loop() {
                     }
                     close(i);
 					FD_CLR(i, &master_fds);
+                }
+
+                // 处理 EXIT 报文
+                else if (strncmp(recv_buf, "EXIT", 4) == 0) {
+                    for (int j = 0; j < MAX_CLIENTS; ++j) {
+                        if (client_list[j].socket_fd == i) {
+            				client_list[j].logged_in = 0;
+            				client_list[j].exited = 1;
+            				client_list[j].socket_fd = -1;
+            				break;
+        				}
+                    }
+                    close(i);
+                    FD_CLR(i, &master_fds);
                 }
 			}
     	}
