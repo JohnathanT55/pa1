@@ -314,27 +314,43 @@ void handle_shell_command(char *cmd) {
 	} else if (strncmp(cmd, "BLOCK", 5) == 0 && !is_server) {
     	char block_ip[IPV4_ADDR_LEN];
     	if (sscanf(cmd + 6, "%15s", block_ip) != 1) {
-        	cse4589_print_and_log("[%s:ERROR]\n", "BLOCK");
-			printf("Invalid command format. Usage: BLOCK <ip>\n");
-        	cse4589_print_and_log("[%s:END]\n", "BLOCK");
+        	cse4589_print_and_log("[BLOCK:ERROR]\n");
+        	printf("Invalid command format. Usage: BLOCK <client-ip>\n");
+        	cse4589_print_and_log("[BLOCK:END]\n");
         	return;
     	}
 
         // 发送 BLOCK 报文, 服务器判断是否存在该IP
-		char buffer[BUFFER_SIZE];
-    	snprintf(buffer, sizeof(buffer), "BLOCK|%s", block_ip);
-    	send(client_socket, buffer, strlen(buffer), 0);
+		struct sockaddr_in sa;
+    	if (inet_pton(AF_INET, block_ip, &(sa.sin_addr)) != 1) {
+        	cse4589_print_and_log("[BLOCK:ERROR]\n");
+        	printf("Invalid IP address.\n");
+        	cse4589_print_and_log("[BLOCK:END]\n");
+        	return;
+    	}
+
+        char buffer[BUFFER_SIZE];
+        snprintf(buffer, sizeof(buffer), "BLOCK|%s", block_ip);
+        send(client_socket, buffer, strlen(buffer), 0);
 
 	} else if (strncmp(cmd, "UNBLOCK", 7) == 0 && !is_server) {
     	char unblock_ip[IPV4_ADDR_LEN];
     	if (sscanf(cmd + 8, "%15s", unblock_ip) != 1) {
-        	cse4589_print_and_log("[%s:ERROR]\n", "UNBLOCK");
-			printf("Invalid command format. Usage: UNBLOCK <ip>\n");
-        	cse4589_print_and_log("[%s:END]\n", "UNBLOCK");
+        	cse4589_print_and_log("[UNBLOCK:ERROR]\n");
+        	printf("Invalid command format. Usage: UNBLOCK <client-ip>\n");
+        	cse4589_print_and_log("[UNBLOCK:END]\n");
         	return;
     	}
 
-    	char buffer[BUFFER_SIZE];
+    	struct sockaddr_in sa;
+    	if (inet_pton(AF_INET, unblock_ip, &(sa.sin_addr)) != 1) {
+        	cse4589_print_and_log("[UNBLOCK:ERROR]\n");
+        	printf("Invalid IP address.\n");
+        	cse4589_print_and_log("[UNBLOCK:END]\n");
+        	return;
+    	}
+
+        char buffer[BUFFER_SIZE];
     	snprintf(buffer, sizeof(buffer), "UNBLOCK|%s", unblock_ip);
     	send(client_socket, buffer, strlen(buffer), 0);
 
@@ -387,7 +403,69 @@ void handle_shell_command(char *cmd) {
             	status);
     	}
     	cse4589_print_and_log("[%s:END]\n", "STATISTICS");
-    }
+
+    } else if (strncmp(cmd, "BLOCKED", 7) == 0 && is_server) {
+    	char target_ip[IPV4_ADDR_LEN];
+    	if (sscanf(cmd + 8, "%15s", target_ip) != 1) {
+        	cse4589_print_and_log("[BLOCKED:ERROR]\n");
+        	printf("Invalid command format. Usage: BLOCKED <client-ip>\n");
+        	cse4589_print_and_log("[BLOCKED:END]\n");
+        	return;
+    	}
+
+    	struct sockaddr_in sa;
+    	if (inet_pton(AF_INET, target_ip, &(sa.sin_addr)) != 1) {
+        	cse4589_print_and_log("[BLOCKED:ERROR]\n");
+        	printf("Invalid IP address.\n");
+        	cse4589_print_and_log("[BLOCKED:END]\n");
+        	return;
+    	}
+
+    	int blocker_index = -1;
+    	for (int i = 0; i < MAX_CLIENTS; ++i) {
+        	if (strcmp(client_list[i].ip, target_ip) == 0 && !client_list[i].exited) {
+            	blocker_index = i;
+            	break;
+        	}
+    	}
+
+    	if (blocker_index == -1) {
+        	cse4589_print_and_log("[BLOCKED:ERROR]\n");
+        	printf("Client with IP %s not found.\n", target_ip);
+        	cse4589_print_and_log("[BLOCKED:END]\n");
+        	return;
+    	}
+
+    	// 找出该 client block 的所有其他客户端
+    	struct client_info blocked_clients[MAX_CLIENTS];
+    	int count = 0;
+    	for (int j = 0; j < MAX_CLIENTS; ++j) {
+        	if (block_matrix[blocker_index][j] == 1 && !client_list[j].exited && strlen(client_list[j].ip) > 0) {
+            	blocked_clients[count++] = client_list[j];
+        	}
+    	}
+
+    	// 按端口号升序排序
+    	for (int i = 0; i < count - 1; ++i) {
+        	for (int j = i + 1; j < count; ++j) {
+            	if (blocked_clients[i].port > blocked_clients[j].port) {
+                	struct client_info temp = blocked_clients[i];
+                	blocked_clients[i] = blocked_clients[j];
+                	blocked_clients[j] = temp;
+            	}
+        	}
+    	}
+
+    	cse4589_print_and_log("[BLOCKED:SUCCESS]\n");
+    	for (int i = 0; i < count; ++i) {
+        	cse4589_print_and_log("%-5d%-35s%-20s%-8d\n",
+            	i + 1,
+            	blocked_clients[i].hostname,
+            	blocked_clients[i].ip,
+            	blocked_clients[i].port);
+    	}
+    	cse4589_print_and_log("[BLOCKED:END]\n");
+	}
 }
 
 /**
@@ -601,48 +679,65 @@ void server_loop() {
 				}
 
 				// 处理 BLOCK 报文
-                else if (strncmp(recv_buf, "BLOCK|", 6) == 0) {
-                    char block_ip[IPV4_ADDR_LEN];
-                    sscanf(recv_buf + 6, "%s", block_ip);
+				else if (strncmp(recv_buf, "BLOCK|", 6) == 0) {
+    				char block_ip[IPV4_ADDR_LEN];
+    				sscanf(recv_buf + 6, "%s", block_ip);
 
-                    // 更新阻塞矩阵
-                    int blocker_index = -1, blocked_index = -1;
-					for (int j = 0; j < MAX_CLIENTS; ++j) {
-						if (client_list[j].socket_fd == i) blocker_index = j;
-						if (client_list[j].logged_in && strcmp(client_list[j].ip, block_ip) == 0) blocked_index = j;
-					}
+    				int blocker_index = -1, blocked_index = -1;
 
-					if (blocker_index == -1 || blocked_index == -1) {
-						send(i, "BLOCK_RESULT|ERROR|Invalid or unknown IP\n", strlen("BLOCK_RESULT|ERROR|Invalid or unknown IP\n"), 0);
-					} else if (block_matrix[blocker_index][blocked_index] == 1) {
-        				send(i, "BLOCK_RESULT|ERROR|Already blocked\n", strlen("BLOCK_RESULT|ERROR|Already blocked\n"), 0);
+    				// 查找 blocker 和被 block 的人
+    				for (int j = 0; j < MAX_CLIENTS; ++j) {
+        				if (client_list[j].socket_fd == i) blocker_index = j;
+        				if (client_list[j].logged_in && strcmp(client_list[j].ip, block_ip) == 0) blocked_index = j;
+    				}
+
+    				if (blocker_index == -1 || blocked_index == -1) {
+        				send(i, "BLOCK_RESULT|ERROR|Invalid or unknown IP\n", strlen("BLOCK_RESULT|ERROR|Invalid or unknown IP\n"), 0);
+    				} else if (block_matrix[blocker_index][blocked_index] == 1) {
+    				    send(i, "BLOCK_RESULT|ERROR|Already blocked\n", strlen("BLOCK_RESULT|ERROR|Already blocked\n"), 0);
     				} else {
-        				block_matrix[blocker_index][blocked_index] = 1;
-        				send(i, "BLOCK_RESULT|SUCCESS\n", strlen("BLOCK_RESULT|SUCCESS\n"), 0);
+        				// 限制：最多只能 block 三个其他客户端
+        				int count = 0;
+        				for (int j = 0; j < MAX_CLIENTS; ++j) {
+            				if (j != blocked_index && block_matrix[blocker_index][j] == 1) {
+                				count++;
+            				}
+        				}
+        				if (count >= 3) {
+            				send(i, "BLOCK_RESULT|ERROR|Block limit exceeded\n", strlen("BLOCK_RESULT|ERROR|Block limit exceeded\n"), 0);
+        				} else {
+            				block_matrix[blocker_index][blocked_index] = 1;
+            				char result_msg[BUFFER_SIZE];
+            				snprintf(result_msg, sizeof(result_msg), "BLOCKS|%s", block_ip);
+                            send(i, result_msg, strlen(result_msg), 0);
+        				}
     				}
 				}
 
 				// 处理 UNBLOCK 报文
-                else if (strncmp(recv_buf, "UNBLOCK|", 8) == 0) {
-                    char unblock_ip[IPV4_ADDR_LEN];
-                    sscanf(recv_buf + 8, "%s", unblock_ip);
+				else if (strncmp(recv_buf, "UNBLOCK|", 8) == 0) {
+    				char unblock_ip[IPV4_ADDR_LEN];
+    				sscanf(recv_buf + 8, "%s", unblock_ip);
 
-                    // 更新阻塞矩阵
-                    int unblocker_index = -1, unblocked_index = -1;
-                    for (int j = 0; j < MAX_CLIENTS; ++j) {
-                        if (client_list[j].socket_fd == i) unblocker_index = j;
-                        if (client_list[j].logged_in && strcmp(client_list[j].ip, unblock_ip) == 0) unblocked_index = j;
-                    }
+    				int unblocker_index = -1, unblocked_index = -1;
 
-                    if (unblocker_index == -1 || unblocked_index == -1) {
-                        send(i, "UNBLOCK_RESULT|ERROR|Invalid or unknown IP\n", strlen("UNBLOCK_RESULT|ERROR|Invalid or unknown IP\n"), 0);
-                    } else if (block_matrix[unblocker_index][unblocked_index] == 0) {
+    				// 查找 unblocker 和目标 ip
+    				for (int j = 0; j < MAX_CLIENTS; ++j) {
+        				if (client_list[j].socket_fd == i) unblocker_index = j;
+        				if (client_list[j].logged_in && strcmp(client_list[j].ip, unblock_ip) == 0) unblocked_index = j;
+    				}
+
+    				if (unblocker_index == -1 || unblocked_index == -1) {
+        				send(i, "UNBLOCK_RESULT|ERROR|Invalid or unknown IP\n", strlen("UNBLOCK_RESULT|ERROR|Invalid or unknown IP\n"), 0);
+    				} else if (block_matrix[unblocker_index][unblocked_index] == 0) {
         				send(i, "UNBLOCK_RESULT|ERROR|Not currently blocked\n", strlen("UNBLOCK_RESULT|ERROR|Not currently blocked\n"), 0);
     				} else {
-        				block_matrix[unblocker_index][unblocked_index] = 0;
-        				send(i, "UNBLOCK_RESULT|SUCCESS\n", strlen("UNBLOCK_RESULT|SUCCESS\n"), 0);
+       					char response[BUFFER_SIZE];
+						snprintf(response, sizeof(response), "UNBLOCKS|%s\n", unblock_ip);
+						send(i, response, strlen(response), 0);
     				}
-                }
+				}
+
 
 				// 处理 REFRESH 报文
 				else if (strncmp(recv_buf, "REFRESH", 7) == 0) {
@@ -676,7 +771,9 @@ void server_loop() {
         				strcat(result, entry);
     				}
 
-    				send(i, result, strlen(result), 0);
+    				char final_result[BUFFER_SIZE * 4] = "REFRESH|";
+					strcat(final_result, result);
+					send(i, final_result, strlen(final_result), 0);
                 }
 
 				// 处理 LOGOUT 报文
@@ -761,27 +858,36 @@ void client_loop() {
                 continue;
             }
 
-            // 判断是 REPLAYED 消息 还是 LIST 输出
             if (strncmp(buf, "RELAYED|", 8) == 0) {
                 char sender_ip[IPV4_ADDR_LEN], msg[MAX_MSG_LEN];
                 sscanf(buf, "RELAYED|%[^|]|%[^\n]", sender_ip, msg);
                 cse4589_print_and_log("[%s:SUCCESS]\n", "RECEIVED");
                 cse4589_print_and_log("msg from:%s\n[msg]:%s\n", sender_ip, msg);
                 cse4589_print_and_log("[%s:END]\n", "RECEIVED");
-            } else if (strncmp(buf, "BLOCK_RESULT|SUCCESS", 21) == 0) {
-    			cse4589_print_and_log("[%s:SUCCESS]\n", "BLOCK");
-    			cse4589_print_and_log("[%s:END]\n", "BLOCK");
-			} else if (strncmp(buf, "BLOCK_RESULT|ERROR|", 20) == 0) {
-    			cse4589_print_and_log("[%s:ERROR]\n", "BLOCK");
+            } else if (strncmp(buf, "BLOCKS", 6) == 0) {
+    			char ip[IPV4_ADDR_LEN];
+    			sscanf(buf + 6, "%15s", ip);
+    			cse4589_print_and_log("[BLOCK:SUCCESS]\n");
+    			cse4589_print_and_log("%s is blocked\n", ip);
+    			cse4589_print_and_log("[BLOCK:END]\n");
+			} else if (strncmp(buf, "BLOCK_RESULT|ERROR|", 19) == 0) {
+    			cse4589_print_and_log("[BLOCK:ERROR]\n");
     			printf("%s\n", buf + 20);
-    			cse4589_print_and_log("[%s:END]\n", "BLOCK");
-			} else if (strncmp(buf, "UNBLOCK_RESULT|SUCCESS", 23) == 0) {
-    			cse4589_print_and_log("[%s:SUCCESS]\n", "UNBLOCK");
-    			cse4589_print_and_log("[%s:END]\n", "UNBLOCK");
-			} else if (strncmp(buf, "UNBLOCK_RESULT|ERROR|", 22) == 0) {
-    			cse4589_print_and_log("[%s:ERROR]\n", "UNBLOCK");
+    			cse4589_print_and_log("[BLOCK:END]\n");
+			} else if (strncmp(buf, "UNBLOCKS", 8) == 0) {
+    			char ip[IPV4_ADDR_LEN];
+    			sscanf(buf + 8, "%15s", ip);
+    			cse4589_print_and_log("[UNBLOCK:SUCCESS]\n");
+    			cse4589_print_and_log("%s is unblocked\n", ip);
+    			cse4589_print_and_log("[UNBLOCK:END]\n");
+			} else if (strncmp(buf, "UNBLOCK_RESULT|ERROR|", 21) == 0) {
+    			cse4589_print_and_log("[UNBLOCK:ERROR]\n");
     			printf("%s\n", buf + 22);
-    			cse4589_print_and_log("[%s:END]\n", "UNBLOCK");
+    			cse4589_print_and_log("[UNBLOCK:END]\n");
+            } else if (strncmp(buf, "REFRESH|", 8) == 0) {
+                cse4589_print_and_log("[%s:SUCCESS]\n", "REFRESH");
+    			printf("%s", buf + 8);
+    			cse4589_print_and_log("[%s:END]\n", "REFRESH");
 			} else {
                 // 其他情况当作 LIST 响应处理
                 cse4589_print_and_log("[%s:SUCCESS]\n", "LIST");
